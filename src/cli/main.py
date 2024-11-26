@@ -17,7 +17,7 @@ def _get_endpoint(segment: str, resource_group: str, subscription_id: str) -> st
 
 
 def _create_template(
-    vm_size: str, test_priorities: list[str], test_cases: list[str], location: str, regions: list[str]
+    vm_size: str, test_priorities: list[str], test_cases: list[str], location: str, regions: list[str], concurrency: int
 ) -> dict[str, Any]:
     template: dict[str, Any] = {
         "templateTags": [],
@@ -34,6 +34,7 @@ def _create_template(
 
     template["region"] = regions if regions else []
     template["vmSize"] = [vm_size] if vm_size else []
+    template["concurrency"] = concurrency
 
     return template
 
@@ -151,6 +152,7 @@ def create_template(
     test_cases: list[str],
     location: str,
     region: list[str],
+    concurrency: int,
 ) -> None:
     """
     Create a new test job template.
@@ -161,7 +163,7 @@ def create_template(
 
     session = ctx.obj["session"]
 
-    template = _create_template(vm_size, test_priorities, test_cases, location, region)
+    template = _create_template(vm_size, test_priorities, test_cases, location, region, concurrency)
 
     payload = {"location": location, "name": name, "properties": template}
     resp = session.put(endpoint, json=payload)
@@ -197,6 +199,59 @@ def get_job(ctx: click.Context, name: str) -> None:
     _output_result(resp)
 
 
+def make_job_create_request(
+    marketplace_image_urn: str,
+    vhd_sas_url: str,
+    job_name: str,
+    template_name: str,
+    resource_group: str,
+    subscription_id: str,
+    vm_size: str,
+    test_priorities: list[str],
+    test_cases: list[str],
+    location: str,
+    region: list[str],
+    concurrency: int,
+    vm_generation: int,
+    architecture: str,
+) -> tuple[dict[str, Any], str]:
+    endpoint = _get_endpoint(f"jobs/{job_name}", resource_group, subscription_id)
+
+    image = {
+        "vhdGeneration": vm_generation,
+        "architecture": architecture,
+    }
+    if marketplace_image_urn and vhd_sas_url:
+        raise ValueError("Only one of --vhd-sas-url or --marketplace-image-urn can be used for a given test job.")
+    elif marketplace_image_urn:
+        image["type"] = "marketplace"
+        image_parts = marketplace_image_urn.split(":")
+        if len(image_parts) != 4:
+            raise ValueError(
+                "marketplace_image_urn should be in the format of 'publisher:offer:sku:version', "
+                f"got {marketplace_image_urn}"
+            )
+        image["publisher"], image["offer"], image["sku"], image["version"] = image_parts
+    elif vhd_sas_url:
+        image["type"] = "vhd"
+        image["url"] = vhd_sas_url
+    else:
+        raise ValueError("One of --vhd-sas-url or --marketplace-image-urn should be passed.")
+
+    template = _create_template(vm_size, test_priorities, test_cases, location, region, concurrency)
+
+    payload = {
+        "location": location,
+        "properties": {
+            "jobTemplateName": template_name,
+            "jobTemplateInstance": template,
+            "image": image,
+        },
+    }
+
+    return (payload, endpoint)
+
+
 @cli.command()
 @click.pass_context
 @click.option("--name", "-n", required=True, help="Job name.")
@@ -207,7 +262,9 @@ def get_job(ctx: click.Context, name: str) -> None:
 )
 @click.option("--vhd-sas-url", "-v", type=str, help="SAS URL of a VHD to test.")
 @click.option("--architecture", "-a", type=click.Choice(["x64", "arm64"]), help="Architecture of the image.")
-@click.option("--vm-generation", "-g", default="2", type=click.Choice(["1", "2"]), help="Hyper-V generation.")
+@click.option(
+    "--vm-generation", "-g", default=2, type=click.IntRange(min=1, max=2, clamp=False), help="Hyper-V generation."
+)
 @click.option("--template-name", "-t", type=str, help="Job template name.")
 @click.option("--name", "-n", help="Job template name.", required=True)
 @click.option("--vm-size", "-s", help="VM size.")
@@ -226,6 +283,13 @@ def get_job(ctx: click.Context, name: str) -> None:
     default=["westeurope"],
     help="Regions where the test resources will be provisioned.",
 )
+@click.option(
+    "--concurrency",
+    "-c",
+    default=0,
+    type=click.IntRange(min=0, max=4, clamp=False),
+    help="The number of tests to run in parallel",
+)
 def create_job(
     ctx: click.Context,
     name: str,
@@ -233,11 +297,12 @@ def create_job(
     vhd_sas_url: str,
     architecture: str,
     template_name: str,
-    vm_generation: str,
+    vm_generation: int,
     vm_size: str,
     test_priorities: list[str],
     test_cases: list[str],
     location: str,
+    concurrency: int,
     region: list[str],
 ) -> None:
     """
@@ -245,43 +310,24 @@ def create_job(
 
     If --test-priority and --test-case are not set, only p0 tests will be run (smoke tests).
     """
-    endpoint = _get_endpoint(f"jobs/{name}", ctx.obj["resource_group"], ctx.obj["subscription_id"])
+    payload, endpoint = make_job_create_request(
+        marketplace_image_urn,
+        vhd_sas_url,
+        name,
+        template_name,
+        ctx.obj["resource_group"],
+        ctx.obj["subscription_id"],
+        vm_size,
+        test_priorities,
+        test_cases,
+        location,
+        region,
+        concurrency,
+        vm_generation,
+        architecture,
+    )
 
     session = ctx.obj["session"]
-
-    image = {
-        "vhdGeneration": int(vm_generation),
-        "architecture": architecture,
-    }
-    if marketplace_image_urn:
-        image["type"] = "marketplace"
-        image_parts = marketplace_image_urn.split(":")
-        if len(image_parts) != 4:
-            raise ValueError(
-                "Marketplace_image_urn should be in the format of 'publisher:offer:sku:version', "
-                f"got {marketplace_image_urn}"
-            )
-        image["publisher"] = image_parts[0]
-        image["offer"] = image_parts[1]
-        image["sku"] = image_parts[2]
-        image["version"] = image_parts[3]
-    elif vhd_sas_url:
-        image["type"] = "vhd"
-        image["url"] = vhd_sas_url
-    else:
-        raise ValueError("One of --vhd-sas-url or --marketplace-image-urn should be passed.")
-
-    template = _create_template(vm_size, test_priorities, test_cases, location, region)
-
-    payload = {
-        "location": location,
-        "properties": {
-            "jobTemplateName": template_name,
-            "jobTemplateInstance": template,
-            "image": image,
-        },
-    }
-
     resp = session.put(endpoint, json=payload)
     _output_result(resp)
 
