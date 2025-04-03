@@ -43,10 +43,10 @@ def _output_result(resp: requests.Response) -> None:
     try:
         resp.raise_for_status()
     except requests.exceptions.HTTPError:
-        print(resp.json())
+        print(resp.text)
         raise
 
-    print(json.dumps(resp.json(), indent=2))
+    print(resp.text)
 
 
 def auth(tenant_id: str, subscription_id: str, client_id: str, client_secret: str) -> str:
