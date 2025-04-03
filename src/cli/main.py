@@ -199,6 +199,21 @@ def get_job(ctx: click.Context, name: str) -> None:
     _output_result(resp)
 
 
+@cli.command()
+@click.pass_context
+@click.option("--name", "-n", required=True)
+def delete_job(ctx: click.Context, name: str) -> None:
+    """
+    Delete a test job.
+    """
+    endpoint = _get_endpoint(f"jobs/{name}", ctx.obj["resource_group"], ctx.obj["subscription_id"])
+
+    session = ctx.obj["session"]
+
+    resp = session.delete(endpoint)
+    _output_result(resp)
+
+
 def make_job_create_request(
     marketplace_image_urn: str,
     vhd_sas_url: str,
