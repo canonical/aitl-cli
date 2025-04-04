@@ -1,6 +1,6 @@
 name: aitl-cli
 base: core22
-version: '0.2.0'
+version: '0.3.0'
 summary: A CLI client for Azure Image Testing for Linux API
 description: |
   The AITL client is a light CLI client for the Azure Image Testing for Linux API
